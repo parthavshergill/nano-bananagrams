@@ -418,6 +418,16 @@
                 <div>
                     <div class="gallery">
                         <h2>🎨 Banana Art Gallery</h2>
+                        
+                        <div style="margin: 15px 0; padding: 15px; background: rgba(255,255,255,0.5); border: 3px solid #5d4e37; border-radius: 8px; box-shadow: 2px 2px 0 rgba(0,0,0,0.1);">
+                            <label for="styleInput" style="display: block; margin-bottom: 8px; font-weight: bold; color: #5d4e37; font-size: 0.5em;">
+                                🎨 Image Style (optional - leave empty for random):
+                            </label>
+                            <input type="text" id="styleInput" placeholder="e.g., watercolor, oil painting, vintage photograph..." 
+                                   style="width: 100%; padding: 8px; border: 2px solid #8b7355; border-radius: 4px; font-size: 12px; box-sizing: border-box; font-family: 'Courier New', monospace;">
+                            <div id="currentStyle" style="margin-top: 8px; font-size: 0.4em; color: #5d4e37; font-style: italic; line-height: 1.5;"></div>
+                        </div>
+                        
                         <div id="galleryLoading" class="loading" style="display: none;"></div>
                         <div class="gallery-grid" id="galleryGrid"></div>
                     </div>
@@ -934,6 +944,40 @@
             document.getElementById('selectedWord').textContent = 'none';
         };
 
+        // Array of random art styles
+        const randomStyles = [
+            'cozy, whimsical pixel art style',
+            'vibrant watercolor painting',
+            'vintage 1950s advertisement style',
+            'minimalist line drawing',
+            'impressionist oil painting',
+            'cyberpunk neon aesthetic',
+            'Studio Ghibli anime style',
+            'retro 8-bit video game graphics',
+            'botanical illustration with fine details',
+            'abstract expressionist artwork',
+            'art deco poster design',
+            'dreamy pastel aesthetic',
+            'bold pop art style',
+            'hand-drawn sketch with ink crosshatching',
+            'vaporwave aesthetic with grid backgrounds',
+            'stained glass window design',
+            'Japanese ukiyo-e woodblock print',
+            'Victorian era engraving',
+            'surrealist painting',
+            'comic book illustration style',
+            'flat design with geometric shapes',
+            'photorealistic 3D render',
+            'psychedelic 1960s poster art',
+            'charcoal drawing on textured paper',
+            'art nouveau with flowing organic lines'
+        ];
+
+        // Function to get a random style
+        function getRandomStyle() {
+            return randomStyles[Math.floor(Math.random() * randomStyles.length)];
+        }
+
         // Update loading status display
         function updateLoadingStatus() {
             const loadingDiv = document.getElementById('galleryLoading');
@@ -963,7 +1007,7 @@
                 updateLoadingStatus();
                 
                 // Process this generation asynchronously
-                generateImageAsync(queueItem.word).finally(() => {
+                generateImageAsync(queueItem.word, queueItem.style).finally(() => {
                     activeGenerations--;
                     updateLoadingStatus();
                     processQueue(); // Process next item if available
@@ -972,7 +1016,7 @@
         }
 
         // Actual image generation function
-        async function generateImageAsync(word) {
+        async function generateImageAsync(word, style) {
             try {
                 // Using Gemini 2.5 Flash Image generation (correct model and API format)
                 const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${googleApiKey}`, {
@@ -983,7 +1027,7 @@
                     body: JSON.stringify({
                         contents: [{
                             parts: [{
-                                text: `Create a cozy, whimsical pixel art style image of: ${word}`
+                                text: `Create a ${style} image of: ${word}`
                             }]
                         }],
                         generationConfig: {
@@ -1056,8 +1100,20 @@
 
             const word = selectedTiles.map(t => t.letter).join('');
             
-            // Add to queue
-            imageQueue.push({ word: word });
+            // Get style from input or use random style
+            const styleInput = document.getElementById('styleInput').value.trim();
+            const style = styleInput || getRandomStyle();
+            
+            // Display the style being used
+            const currentStyleDiv = document.getElementById('currentStyle');
+            if (styleInput) {
+                currentStyleDiv.textContent = `Using custom style: ${style}`;
+            } else {
+                currentStyleDiv.textContent = `Using random style: ${style}`;
+            }
+            
+            // Add to queue with style
+            imageQueue.push({ word: word, style: style });
             
             // Clear selection immediately so user can select more tiles
             await window.clearSelection();
