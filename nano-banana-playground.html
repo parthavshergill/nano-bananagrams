@@ -544,7 +544,8 @@
         }
 
         // Helper function to clean up drag state
-        function cleanupDragState(tileElement) {
+        function cleanupDragState(tileElement, options = {}) {
+            const { removePlaceholder = true } = options;
             if (tileElement) {
                 tileElement.classList.remove('dragging');
                 tileElement.style.position = '';
@@ -556,7 +557,7 @@
                     document.body.removeChild(tileElement);
                 }
             }
-            if (tilePlaceholder && tilePlaceholder.parentNode) {
+            if (removePlaceholder && tilePlaceholder && tilePlaceholder.parentNode) {
                 tilePlaceholder.parentNode.removeChild(tilePlaceholder);
             }
             tilePlaceholder = null;
@@ -572,6 +573,13 @@
             const tiles = tilesToArray(data.tiles || []);
             const updates = {};
             let drawnCount = 0;
+            let maxSlot = -1;
+
+            tiles.forEach(tile => {
+                if (tile && typeof tile.poolSlot === 'number') {
+                    maxSlot = Math.max(maxSlot, tile.poolSlot);
+                }
+            });
             
             // Iterate through tiles to find ones in pile
             // Use the actual array index which corresponds to Firebase's numeric key
@@ -579,6 +587,10 @@
                 if (tiles[i] && tiles[i].location === 'pile') {
                     // Use array index as Firebase key (Firebase stores arrays as {0: ..., 1: ..., ...})
                     updates[`tiles/${i}/location`] = 'pool';
+                    if (tiles[i].poolSlot === undefined || tiles[i].poolSlot === null) {
+                        maxSlot += 1;
+                        updates[`tiles/${i}/poolSlot`] = maxSlot;
+                    }
                     drawnCount++;
                 }
             }
@@ -598,19 +610,66 @@
 
             // Convert tiles to array format (Firebase may return object)
             const tiles = tilesToArray(data.tiles || []);
+            const slotUpdates = {};
+            let maxSlot = -1;
 
-            // Render tiles
-            tiles.forEach(tile => {
-                if (!tile) return; // Skip null/undefined entries
-                
-                const tileEl = createTileElement(tile);
-                
+            // First pass: render board tiles and determine slot info
+            tiles.forEach((tile, index) => {
+                if (!tile) return;
+
+                if (typeof tile.poolSlot === 'number') {
+                    maxSlot = Math.max(maxSlot, tile.poolSlot);
+                }
+
+                if (tile.location === 'pool' && (tile.poolSlot === undefined || tile.poolSlot === null)) {
+                    maxSlot += 1;
+                    slotUpdates[`tiles/${index}/poolSlot`] = maxSlot;
+                    tile.poolSlot = maxSlot;
+                }
+
                 if (tile.location === 'board') {
+                    const tileEl = createTileElement(tile);
                     board.appendChild(tileEl);
-                } else if (tile.location === 'pool') {
-                    pool.appendChild(tileEl);
                 }
             });
+
+            const totalSlots = maxSlot + 1;
+
+            if (totalSlots > 0) {
+                const slots = new Array(totalSlots).fill(null);
+
+                tiles.forEach(tile => {
+                    if (!tile) return;
+                    if (typeof tile.poolSlot === 'number') {
+                        // Always use the last seen tile for this slot (should be unique)
+                        slots[tile.poolSlot] = tile;
+                    }
+                });
+
+                slots.forEach(tile => {
+                    if (tile && tile.location === 'pool') {
+                        pool.appendChild(createTileElement(tile));
+                    } else {
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'tile placeholder';
+                        pool.appendChild(placeholder);
+                    }
+                });
+            } else {
+                // Fallback for legacy data with no slot information yet
+                tiles.forEach(tile => {
+                    if (!tile) return;
+                    if (tile.location === 'pool') {
+                        pool.appendChild(createTileElement(tile));
+                    }
+                });
+            }
+
+            if (Object.keys(slotUpdates).length > 0) {
+                update(gameRef, slotUpdates).catch(error => {
+                    console.error('Error assigning pool slots:', error);
+                });
+            }
 
             // Update status
             const pileCount = tiles.filter(t => t && t.location === 'pile').length;
@@ -750,6 +809,7 @@
                         tileCenterY <= boardRect.bottom
                     );
 
+                    let keepPlaceholder = false;
                     try {
                         const snapshot = await get(gameRef);
                         const data = snapshot.val();
@@ -773,6 +833,8 @@
                             x = Math.max(0, Math.min(x, boardRect.width - 50));
                             y = Math.max(0, Math.min(y, boardRect.height - 50));
 
+                            keepPlaceholder = startParent && startParent.classList.contains('tile-pool');
+
                             await update(gameRef, {
                                 [`tiles/${tileIndex}/location`]: 'board',
                                 [`tiles/${tileIndex}/x`]: x,
@@ -789,7 +851,7 @@
                     } catch (error) {
                         console.error('Error updating tile:', error);
                     } finally {
-                        cleanupDragState(draggedTile);
+                        cleanupDragState(draggedTile, { removePlaceholder: !keepPlaceholder });
                     }
                 }
             });
