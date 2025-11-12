@@ -462,15 +462,160 @@
 
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getDatabase, ref, set, onValue, update, get } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getDatabase, ref, set, onValue, update, get, push, onChildAdded, query, limitToLast, orderByChild } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getStorage, ref as storageRef, uploadString, getDownloadURL } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js';
 
         let db;
+        let storage;
         let gameRef;
+        let galleryRef;
         let googleApiKey;
         let isDragging = false;
         let draggedTile = null;
         let offsetX, offsetY;
         let tilePlaceholder = null;
+        
+        // IndexedDB for local image caching (acts like a local folder)
+        let imageCache;
+        
+        /**
+         * Initialize IndexedDB as a local image cache
+         * This persists between sessions like a local folder
+         */
+        function initImageCache() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open('BananaImageCache', 1);
+                
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                    imageCache = request.result;
+                    console.log('Image cache initialized (acts like local folder)');
+                    resolve(imageCache);
+                };
+                
+                request.onupgradeneeded = (event) => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains('images')) {
+                        db.createObjectStore('images', { keyPath: 'id' });
+                    }
+                };
+            });
+        }
+        
+        /**
+         * Save image to local cache
+         * @param {string} id - Unique image ID
+         * @param {string} imageData - Base64 image data
+         * @param {string} word - The word this image represents
+         */
+        async function saveImageToCache(id, imageData, word) {
+            return new Promise((resolve, reject) => {
+                const transaction = imageCache.transaction(['images'], 'readwrite');
+                const store = transaction.objectStore('images');
+                const request = store.put({ id, imageData, word, timestamp: Date.now() });
+                
+                request.onsuccess = () => {
+                    console.log(`Saved "${word}" to local cache`);
+                    resolve();
+                };
+                request.onerror = () => reject(request.error);
+            });
+        }
+        
+        /**
+         * Get image from local cache
+         * @param {string} id - Unique image ID
+         * @returns {Promise<object|null>} Image object or null if not found
+         */
+        async function getImageFromCache(id) {
+            return new Promise((resolve, reject) => {
+                const transaction = imageCache.transaction(['images'], 'readonly');
+                const store = transaction.objectStore('images');
+                const request = store.get(id);
+                
+                request.onsuccess = () => resolve(request.result || null);
+                request.onerror = () => reject(request.error);
+            });
+        }
+        
+        // Image compression settings - optimized for gallery thumbnails
+        const IMAGE_COMPRESSION = {
+            maxWidth: 400,  // Max width for gallery images (reduced from 512)
+            maxHeight: 400, // Max height for gallery images (reduced from 512)
+            quality: 0.6,   // JPEG quality (0.0 - 1.0) - reduced from 0.7
+            format: 'image/jpeg' // Output format (JPEG is smaller than PNG)
+        };
+        
+        /**
+         * Compress and resize a base64 image
+         * @param {string} base64Image - Base64 encoded image data (with or without data URL prefix)
+         * @param {string} originalMimeType - Original MIME type of the image
+         * @returns {Promise<string>} Compressed base64 image with data URL prefix
+         */
+        async function compressImage(base64Image, originalMimeType = 'image/png') {
+            return new Promise((resolve, reject) => {
+                // Remove data URL prefix if present
+                const base64Data = base64Image.includes(',') 
+                    ? base64Image.split(',')[1] 
+                    : base64Image;
+                
+                // Create an image element
+                const img = new Image();
+                
+                img.onload = () => {
+                    // Calculate new dimensions while maintaining aspect ratio
+                    let width = img.width;
+                    let height = img.height;
+                    
+                    if (width > IMAGE_COMPRESSION.maxWidth || height > IMAGE_COMPRESSION.maxHeight) {
+                        const aspectRatio = width / height;
+                        
+                        if (width > height) {
+                            width = IMAGE_COMPRESSION.maxWidth;
+                            height = width / aspectRatio;
+                        } else {
+                            height = IMAGE_COMPRESSION.maxHeight;
+                            width = height * aspectRatio;
+                        }
+                    }
+                    
+                    // Create canvas and draw resized image
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Convert to compressed format
+                    const compressedDataUrl = canvas.toDataURL(
+                        IMAGE_COMPRESSION.format, 
+                        IMAGE_COMPRESSION.quality
+                    );
+                    
+                    // Log compression stats and verify compression was beneficial
+                    const originalSize = base64Data.length;
+                    const compressedSize = compressedDataUrl.split(',')[1].length;
+                    
+                    // If compression made it larger (rare but possible), use original
+                    if (compressedSize >= originalSize) {
+                        console.log(`Compression not beneficial: ${originalSize} → ${compressedSize} bytes, using original`);
+                        resolve(`data:${originalMimeType};base64,${base64Data}`);
+                    } else {
+                        const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+                        console.log(`Image compressed: ${originalSize} → ${compressedSize} bytes (${compressionRatio}% reduction)`);
+                        resolve(compressedDataUrl);
+                    }
+                };
+                
+                img.onerror = () => {
+                    reject(new Error('Failed to load image for compression'));
+                };
+                
+                // Set image source
+                img.src = `data:${originalMimeType};base64,${base64Data}`;
+            });
+        }
         
         // Viewport state for infinite scrollable canvas
         let viewportOffset = { x: 0, y: 0 };
@@ -516,7 +661,7 @@
             'Y': 3, 'Z': 2
         };
 
-        window.initializeApp = function() {
+        window.initializeApp = async function() {
             try {
                 const firebaseConfig = JSON.parse(document.getElementById('firebaseConfig').value);
                 googleApiKey = document.getElementById('googleApiKey').value.trim();
@@ -526,9 +671,14 @@
                     return;
                 }
 
+                // Initialize image cache first (local storage)
+                await initImageCache();
+
                 const app = initializeApp(firebaseConfig);
                 db = getDatabase(app);
+                storage = getStorage(app);
                 gameRef = ref(db, 'nanoBananaGame');
+                galleryRef = ref(db, 'nanoBananaGallery');
 
                 // Initialize game state if it doesn't exist
                 onValue(gameRef, (snapshot) => {
@@ -537,6 +687,19 @@
                     } else {
                         renderGame(snapshot.val());
                     }
+                });
+
+                // Load only the 50 most recent gallery images to reduce initial data transfer
+                // According to Firebase docs: limitToLast() combined with orderByChild() 
+                // efficiently limits the number of children synced
+                const galleryQuery = query(galleryRef, orderByChild('timestamp'), limitToLast(50));
+                
+                // Set up gallery listener - only listens for NEW images being added
+                // Now only stores metadata in DB, actual images in local cache
+                onChildAdded(galleryQuery, (snapshot) => {
+                    const imageId = snapshot.key;
+                    const metadata = snapshot.val();
+                    addGalleryItem(imageId, metadata);
                 });
 
                 document.getElementById('setup').style.display = 'none';
@@ -561,8 +724,7 @@
             }
 
             const initialState = {
-                tiles: tiles,
-                gallery: []
+                tiles: tiles
             };
 
             set(gameRef, initialState);
@@ -764,8 +926,7 @@
                 pileLettersEl.textContent = letterPairs.join(', ');
             }
 
-            // Render gallery
-            renderGallery(data.gallery || []);
+            // Gallery is handled separately by onChildAdded listener
         }
 
         function createTileElement(tile) {
@@ -1252,20 +1413,45 @@
                     if (imagePart && imagePart.inlineData) {
                         const imageData = imagePart.inlineData.data;
                         const mimeType = imagePart.inlineData.mimeType || 'image/png';
-                        const imageUrl = `data:${mimeType};base64,${imageData}`;
-
-                        // Get current gallery from Firebase
-                        const snapshot = await get(gameRef);
-                        const data = snapshot.val();
-                        const gallery = data.gallery || [];
                         
-                        gallery.push({
+                        console.log(`Original image size: ${imageData.length} bytes`);
+                        
+                        // Compress the image before storing
+                        let compressedImageData;
+                        try {
+                            compressedImageData = await compressImage(imageData, mimeType);
+                            console.log(`Compressed image size: ${compressedImageData.split(',')[1].length} bytes`);
+                        } catch (compressionError) {
+                            console.warn('Compression failed, using original image:', compressionError);
+                            compressedImageData = `data:${mimeType};base64,${imageData}`;
+                        }
+
+                        // NEW OPTIMIZED APPROACH:
+                        // 1. Upload image to Firebase Storage (shareable cloud file)
+                        // 2. Save download URL + metadata to Realtime Database (tiny)
+                        // 3. Cache locally for instant loading next time
+                        
+                        const newImageRef = push(galleryRef);
+                        const imageId = newImageRef.key;
+                        
+                        // Upload compressed image to Firebase Storage
+                        const imageStorageRef = storageRef(storage, `gallery/${imageId}.jpg`);
+                        await uploadString(imageStorageRef, compressedImageData, 'data_url');
+                        
+                        // Get the download URL from Storage
+                        const downloadUrl = await getDownloadURL(imageStorageRef);
+                        
+                        // Save to local cache for instant loading (uses compressed data)
+                        await saveImageToCache(imageId, compressedImageData, word);
+                        
+                        // Save metadata + Storage URL to Realtime Database
+                        await set(newImageRef, {
                             word: word,
-                            imageUrl: imageUrl,
+                            storageUrl: downloadUrl,  // Firebase Storage download URL
                             timestamp: Date.now()
                         });
-
-                        await update(gameRef, { gallery: gallery });
+                        
+                        console.log(`✅ Image saved: Storage=Cloud, DB=URL only, Cache=${(compressedImageData.length/1024).toFixed(1)}KB`);
                     } else {
                         console.error('Response structure:', result);
                         alert(`No image data for "${word}". Check console for details.`);
@@ -1322,29 +1508,92 @@
             processQueue();
         };
 
-        function renderGallery(gallery) {
+        // Add a single gallery item to the display
+        // NEW: Three-tier loading strategy for optimal performance
+        async function addGalleryItem(imageId, metadata) {
             const grid = document.getElementById('galleryGrid');
-            grid.innerHTML = '';
-
-            if (gallery.length === 0) {
-                grid.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: #5d4e37;">No banana art yet! Select tiles and generate some! 🎨</p>';
-                return;
+            
+            // Remove the "no art yet" message if it exists
+            const emptyMessage = grid.querySelector('p');
+            if (emptyMessage) {
+                emptyMessage.remove();
             }
-
-            gallery.slice().reverse().forEach(item => {
-                const div = document.createElement('div');
-                div.className = 'gallery-item';
-                div.innerHTML = `
-                    <img src="${item.imageUrl}" alt="${item.word}">
-                    <div class="caption">${item.word}</div>
-                `;
-                grid.appendChild(div);
-            });
+            
+            // Create gallery item with placeholder initially
+            const div = document.createElement('div');
+            div.className = 'gallery-item';
+            div.innerHTML = `
+                <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23f4e4c1' width='400' height='400'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%235d4e37' font-family='monospace' font-size='16'%3ELoading...%3C/text%3E%3C/svg%3E" alt="${metadata.word}">
+                <div class="caption">${metadata.word}</div>
+            `;
+            grid.insertBefore(div, grid.firstChild);
+            
+            const img = div.querySelector('img');
+            
+            try {
+                // STEP 1: Try local cache first (instant!)
+                const cachedImage = await getImageFromCache(imageId);
+                
+                if (cachedImage && cachedImage.imageData) {
+                    // ✅ Image found in cache! Display it immediately
+                    img.src = cachedImage.imageData;
+                    console.log(`📂 Loaded "${metadata.word}" from cache (no download)`);
+                    return;
+                }
+                
+                // STEP 2: Not in cache - check for new format (Storage URL) or old format (embedded base64)
+                if (metadata.storageUrl) {
+                    // NEW FORMAT: Download from Firebase Storage
+                    console.log(`☁️ Downloading "${metadata.word}" from Firebase Storage...`);
+                    
+                    const response = await fetch(metadata.storageUrl);
+                    const blob = await response.blob();
+                    
+                    // Convert blob to data URL for caching
+                    const reader = new FileReader();
+                    reader.onloadend = async () => {
+                        const dataUrl = reader.result;
+                        img.src = dataUrl;
+                        await saveImageToCache(imageId, dataUrl, metadata.word);
+                        console.log(`✅ Downloaded and cached "${metadata.word}"`);
+                    };
+                    reader.readAsDataURL(blob);
+                } else if (metadata.imageUrl) {
+                    // OLD FORMAT: Image data embedded in database (backward compatibility)
+                    console.log(`🔄 Loading "${metadata.word}" from old format (embedded in DB)`);
+                    img.src = metadata.imageUrl;
+                    // Cache it for next time
+                    await saveImageToCache(imageId, metadata.imageUrl, metadata.word);
+                    console.log(`✅ Cached old format image "${metadata.word}"`);
+                } else {
+                    // No image data at all
+                    console.warn(`⚠️ No image data for "${metadata.word}" (neither storageUrl nor imageUrl)`);
+                    img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23f4e4c1' width='400' height='400'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%235d4e37' font-family='monospace' font-size='12'%3EImage data missing%3C/text%3E%3C/svg%3E";
+                }
+            } catch (error) {
+                console.error(`Error loading "${metadata.word}":`, error);
+                img.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400'%3E%3Crect fill='%23f4e4c1' width='400' height='400'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%235d4e37' font-family='monospace' font-size='14'%3EError loading%3C/text%3E%3C/svg%3E";
+            }
         }
 
-        window.resetGame = function() {
-            if (confirm('Reset the entire game? This will clear everything!')) {
+        window.resetGame = async function() {
+            if (confirm('Reset the game? This will:\n• Reset the tile game\n• Clear your local image cache\n• Images stay in cloud storage (safe!)')) {
+                // Reset game state
                 initializeGameState();
+                
+                // Clear local image cache only (images still in Firebase Storage!)
+                try {
+                    const transaction = imageCache.transaction(['images'], 'readwrite');
+                    const store = transaction.objectStore('images');
+                    await store.clear();
+                    console.log('Local image cache cleared (images safe in cloud)');
+                } catch (error) {
+                    console.error('Error clearing cache:', error);
+                }
+                
+                // Clear the gallery display
+                const grid = document.getElementById('galleryGrid');
+                grid.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: #5d4e37;">Cache cleared. Reload page to re-download images from cloud! 🔄</p>';
             }
         };
     </script>
