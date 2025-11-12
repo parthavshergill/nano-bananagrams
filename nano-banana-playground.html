@@ -711,23 +711,21 @@
                 }
             });
             
-            // Display letter breakdown grouped by count
-            const countGroups = {};
-            for (const [letter, count] of Object.entries(letterCounts)) {
-                if (!countGroups[count]) {
-                    countGroups[count] = [];
-                }
-                countGroups[count].push(letter);
+            // Display letter breakdown as letter: count pairs
+            const pileLettersEl = document.getElementById('pileLetters');
+            
+            if (Object.keys(letterCounts).length === 0) {
+                pileLettersEl.textContent = 'Empty';
+            } else {
+                // Sort letters alphabetically and format as compact letter:count pairs
+                const sortedLetters = Object.keys(letterCounts).sort();
+                const letterPairs = sortedLetters.map(letter => 
+                    `${letter}:${letterCounts[letter]}`
+                );
+                
+                // Join with spaces and commas for compact display
+                pileLettersEl.textContent = letterPairs.join(', ');
             }
-            
-            // Sort groups by count (descending) and format display
-            const sortedCounts = Object.keys(countGroups).map(Number).sort((a, b) => b - a);
-            const breakdownText = sortedCounts.map(count => {
-                const letters = countGroups[count].sort().join(', ');
-                return `${count}: ${letters}`;
-            }).join(' | ');
-            
-            document.getElementById('pileLetters').textContent = breakdownText || 'Empty';
 
             // Render gallery
             renderGallery(data.gallery || []);
