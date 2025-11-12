@@ -640,50 +640,81 @@
                 div.classList.add('selected');
             }
 
-            div.addEventListener('click', () => toggleTileSelection(tile.id));
+            // Don't attach click handler here - it's handled in the drag system to avoid race conditions
 
             return div;
         }
 
         function setupDragAndDrop() {
             let startParent = null;
+            let startLocation = null;
+            let startX = null;
+            let startY = null;
+            let dragStartX = null;
+            let dragStartY = null;
+            let dragInitiated = false;
+            const DRAG_THRESHOLD = 5; // pixels - must move this many pixels before it's considered a drag
 
             document.addEventListener('mousedown', (e) => {
                 const target = e.target;
                 if (target.classList.contains('tile')) {
+                    // Just track that we might start dragging - don't manipulate DOM yet
                     isDragging = true;
                     draggedTile = target;
                     startParent = draggedTile.parentElement;
+                    dragInitiated = false;
+                    dragStartX = e.clientX;
+                    dragStartY = e.clientY;
+
+                    // Store original position for board tiles
+                    if (startParent && startParent.id === 'gameBoard') {
+                        startLocation = 'board';
+                        startX = parseInt(draggedTile.style.left) || 0;
+                        startY = parseInt(draggedTile.style.top) || 0;
+                    } else {
+                        startLocation = 'pool';
+                        startX = null;
+                        startY = null;
+                    }
 
                     const rect = draggedTile.getBoundingClientRect();
                     offsetX = e.clientX - rect.left;
                     offsetY = e.clientY - rect.top;
 
-                    if (startParent && startParent.classList.contains('tile-pool')) {
-                        tilePlaceholder = document.createElement('div');
-                        tilePlaceholder.className = 'tile placeholder';
-                        tilePlaceholder.style.width = rect.width + 'px';
-                        tilePlaceholder.style.height = rect.height + 'px';
-                        startParent.replaceChild(tilePlaceholder, draggedTile);
-                    } else {
-                        tilePlaceholder = null;
-                    }
-
-                    draggedTile.classList.add('dragging');
-                    draggedTile.style.position = 'fixed';
-                    draggedTile.style.zIndex = 1000;
-                    draggedTile.style.left = (e.clientX - offsetX) + 'px';
-                    draggedTile.style.top = (e.clientY - offsetY) + 'px';
-                    draggedTile.style.margin = '0';
-
-                    document.body.appendChild(draggedTile);
-
                     e.preventDefault();
+                    e.stopPropagation();
                 }
             });
 
             document.addEventListener('mousemove', (e) => {
-                if (isDragging && draggedTile) {
+                if (isDragging && draggedTile && !dragInitiated) {
+                    const deltaX = Math.abs(e.clientX - dragStartX);
+                    const deltaY = Math.abs(e.clientY - dragStartY);
+                    
+                    // Only initiate actual drag if moved beyond threshold
+                    if (deltaX > DRAG_THRESHOLD || deltaY > DRAG_THRESHOLD) {
+                        dragInitiated = true;
+                        
+                        // NOW start the actual drag - manipulate DOM
+                        if (startParent && startParent.classList.contains('tile-pool')) {
+                            tilePlaceholder = document.createElement('div');
+                            tilePlaceholder.className = 'tile placeholder';
+                            const rect = draggedTile.getBoundingClientRect();
+                            tilePlaceholder.style.width = rect.width + 'px';
+                            tilePlaceholder.style.height = rect.height + 'px';
+                            startParent.replaceChild(tilePlaceholder, draggedTile);
+                        }
+
+                        draggedTile.classList.add('dragging');
+                        draggedTile.style.position = 'fixed';
+                        draggedTile.style.zIndex = 1000;
+                        draggedTile.style.margin = '0';
+                        document.body.appendChild(draggedTile);
+                    }
+                }
+                
+                // Update position if drag is active
+                if (dragInitiated && draggedTile) {
                     draggedTile.style.left = (e.clientX - offsetX) + 'px';
                     draggedTile.style.top = (e.clientY - offsetY) + 'px';
                 }
@@ -691,6 +722,20 @@
 
             document.addEventListener('mouseup', async (e) => {
                 if (isDragging && draggedTile) {
+                    const tileId = parseInt(draggedTile.dataset.tileId, 10);
+
+                    // If drag was never initiated (didn't move beyond threshold), it's just a click
+                    if (!dragInitiated) {
+                        // Just a click - toggle selection
+                        // No DOM manipulation needed - Firebase will handle the visual update
+                        isDragging = false;
+                        draggedTile = null;
+                        
+                        await toggleTileSelection(tileId);
+                        return;
+                    }
+
+                    // Actual drag occurred - handle the drop
                     const board = document.getElementById('gameBoard');
                     const boardRect = board.getBoundingClientRect();
                     const tileRect = draggedTile.getBoundingClientRect();
@@ -705,9 +750,6 @@
                         tileCenterY <= boardRect.bottom
                     );
 
-                    const tileId = parseInt(draggedTile.dataset.tileId, 10);
-                    const currentDraggedTile = draggedTile;
-
                     try {
                         const snapshot = await get(gameRef);
                         const data = snapshot.val();
@@ -716,10 +758,12 @@
                         
                         if (tileIndex === -1) {
                             console.error('Tile not found:', tileId);
+                            cleanupDragState(draggedTile);
                             return;
                         }
 
                         if (isOverBoard) {
+                            // Dropped on board - snap to grid
                             let x = tileCenterX - boardRect.left - 25;
                             let y = tileCenterY - boardRect.top - 25;
 
@@ -735,13 +779,7 @@
                                 [`tiles/${tileIndex}/y`]: y
                             });
                         } else {
-                            if (tilePlaceholder && tilePlaceholder.parentNode) {
-                                tilePlaceholder.parentNode.replaceChild(currentDraggedTile, tilePlaceholder);
-                                tilePlaceholder = null;
-                            } else if (startParent && startParent.classList.contains('tile-pool')) {
-                                startParent.appendChild(currentDraggedTile);
-                            }
-
+                            // Dropped outside board - return to pool
                             await update(gameRef, {
                                 [`tiles/${tileIndex}/location`]: 'pool',
                                 [`tiles/${tileIndex}/x`]: null,
@@ -751,8 +789,7 @@
                     } catch (error) {
                         console.error('Error updating tile:', error);
                     } finally {
-                        startParent = null;
-                        cleanupDragState(currentDraggedTile);
+                        cleanupDragState(draggedTile);
                     }
                 }
             });
