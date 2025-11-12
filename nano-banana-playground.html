@@ -870,9 +870,20 @@
             
             const tile = tiles[tileIndex];
             
-            await update(gameRef, {
+            // If selecting, add timestamp; if deselecting, remove timestamp
+            const updates = {
                 [`tiles/${tileIndex}/selected`]: !tile.selected
-            });
+            };
+            
+            if (!tile.selected) {
+                // Selecting - add timestamp for ordering
+                updates[`tiles/${tileIndex}/selectionTimestamp`] = Date.now();
+            } else {
+                // Deselecting - remove timestamp
+                updates[`tiles/${tileIndex}/selectionTimestamp`] = null;
+            }
+            
+            await update(gameRef, updates);
 
             // Update selected word display
             setTimeout(async () => {
@@ -880,6 +891,7 @@
                 const tilesArray = tilesToArray(snap.val().tiles || []);
                 const selectedTiles = tilesArray
                     .filter(t => t && t.selected)
+                    .sort((a, b) => (a.selectionTimestamp || 0) - (b.selectionTimestamp || 0))
                     .map(t => t.letter)
                     .join('');
                 document.getElementById('selectedWord').textContent = 
@@ -896,6 +908,7 @@
             tiles.forEach((tile, index) => {
                 if (tile && tile.selected) {
                     updates[`tiles/${index}/selected`] = false;
+                    updates[`tiles/${index}/selectionTimestamp`] = null;
                 }
             });
 
@@ -908,7 +921,9 @@
             const snapshot = await get(gameRef);
             const data = snapshot.val();
             const tiles = tilesToArray(data.tiles || []);
-            const selectedTiles = tiles.filter(t => t && t.selected);
+            const selectedTiles = tiles
+                .filter(t => t && t.selected)
+                .sort((a, b) => (a.selectionTimestamp || 0) - (b.selectionTimestamp || 0));
             
             if (selectedTiles.length === 0) {
                 alert('Select some tiles first!');
