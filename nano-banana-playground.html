@@ -344,7 +344,7 @@
 <body>
     <div class="container">
         <header>
-            <h1>🍌 Nano Banana Playground 🍌</h1>
+            <h1>🍌 Nano-Bananagrams 🍌</h1>
             <p>Async Bananagrams with AI Image Generation!</p>
         </header>
 
@@ -572,7 +572,6 @@
             // Convert tiles to array format (Firebase may return object)
             const tiles = tilesToArray(data.tiles || []);
             const updates = {};
-            let drawnCount = 0;
             let maxSlot = -1;
 
             tiles.forEach(tile => {
@@ -581,17 +580,29 @@
                 }
             });
             
-            // Iterate through tiles to find ones in pile
-            // Use the actual array index which corresponds to Firebase's numeric key
-            for (let i = 0; i < tiles.length && drawnCount < 21; i++) {
+            // Get all indices of tiles in the pile
+            const pileIndices = [];
+            for (let i = 0; i < tiles.length; i++) {
                 if (tiles[i] && tiles[i].location === 'pile') {
-                    // Use array index as Firebase key (Firebase stores arrays as {0: ..., 1: ..., ...})
-                    updates[`tiles/${i}/location`] = 'pool';
-                    if (tiles[i].poolSlot === undefined || tiles[i].poolSlot === null) {
-                        maxSlot += 1;
-                        updates[`tiles/${i}/poolSlot`] = maxSlot;
-                    }
-                    drawnCount++;
+                    pileIndices.push(i);
+                }
+            }
+            
+            // Shuffle the pile indices using Fisher-Yates algorithm
+            for (let i = pileIndices.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [pileIndices[i], pileIndices[j]] = [pileIndices[j], pileIndices[i]];
+            }
+            
+            // Draw up to 21 tiles randomly from the shuffled pile
+            const numToDraw = Math.min(21, pileIndices.length);
+            for (let i = 0; i < numToDraw; i++) {
+                const tileIndex = pileIndices[i];
+                // Use array index as Firebase key (Firebase stores arrays as {0: ..., 1: ..., ...})
+                updates[`tiles/${tileIndex}/location`] = 'pool';
+                if (tiles[tileIndex].poolSlot === undefined || tiles[tileIndex].poolSlot === null) {
+                    maxSlot += 1;
+                    updates[`tiles/${tileIndex}/poolSlot`] = maxSlot;
                 }
             }
 
