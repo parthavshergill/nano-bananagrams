@@ -909,6 +909,50 @@
             });
         }
 
+        // Helper function: Check if two tiles are adjacent on the grid
+        function areTilesAdjacent(tile1, tile2) {
+            const GRID_SIZE = 55; // tiles snap to 55px grid
+            const gridX1 = Math.round(tile1.x / GRID_SIZE);
+            const gridY1 = Math.round(tile1.y / GRID_SIZE);
+            const gridX2 = Math.round(tile2.x / GRID_SIZE);
+            const gridY2 = Math.round(tile2.y / GRID_SIZE);
+            
+            const deltaX = Math.abs(gridX1 - gridX2);
+            const deltaY = Math.abs(gridY1 - gridY2);
+            
+            // Adjacent means exactly 1 grid unit away in either X or Y, but not both
+            return (deltaX === 1 && deltaY === 0) || (deltaX === 0 && deltaY === 1);
+        }
+
+        // Helper function: Determine direction between two tiles
+        function getTileDirection(tile1, tile2) {
+            const GRID_SIZE = 55;
+            const gridX1 = Math.round(tile1.x / GRID_SIZE);
+            const gridY1 = Math.round(tile1.y / GRID_SIZE);
+            const gridX2 = Math.round(tile2.x / GRID_SIZE);
+            const gridY2 = Math.round(tile2.y / GRID_SIZE);
+            
+            if (gridY1 === gridY2) return 'horizontal';
+            if (gridX1 === gridX2) return 'vertical';
+            return null; // not in same row or column
+        }
+
+        // Helper function: Check if tile is in same row as reference tile
+        function isInSameRow(tile, referenceTile) {
+            const GRID_SIZE = 55;
+            const gridY1 = Math.round(tile.y / GRID_SIZE);
+            const gridY2 = Math.round(referenceTile.y / GRID_SIZE);
+            return gridY1 === gridY2;
+        }
+
+        // Helper function: Check if tile is in same column as reference tile
+        function isInSameColumn(tile, referenceTile) {
+            const GRID_SIZE = 55;
+            const gridX1 = Math.round(tile.x / GRID_SIZE);
+            const gridX2 = Math.round(referenceTile.x / GRID_SIZE);
+            return gridX1 === gridX2;
+        }
+
         async function toggleTileSelection(tileId) {
             const snapshot = await get(gameRef);
             const data = snapshot.val();
@@ -922,20 +966,76 @@
             
             const tile = tiles[tileIndex];
             
-            // If selecting, add timestamp; if deselecting, remove timestamp
-            const updates = {
-                [`tiles/${tileIndex}/selected`]: !tile.selected
-            };
-            
-            if (!tile.selected) {
-                // Selecting - add timestamp for ordering
-                updates[`tiles/${tileIndex}/selectionTimestamp`] = Date.now();
-            } else {
-                // Deselecting - remove timestamp
-                updates[`tiles/${tileIndex}/selectionTimestamp`] = null;
+            // Only allow selection of board tiles
+            if (tile.location !== 'board') {
+                return;
             }
             
-            await update(gameRef, updates);
+            // Get currently selected tiles sorted by selection order
+            const selectedTiles = tiles
+                .filter(t => t && t.selected)
+                .sort((a, b) => (a.selectionTimestamp || 0) - (b.selectionTimestamp || 0));
+            
+            // If clicking an already-selected tile, clear all selections
+            if (tile.selected) {
+                const updates = {};
+                tiles.forEach((t, index) => {
+                    if (t && t.selected) {
+                        updates[`tiles/${index}/selected`] = false;
+                        updates[`tiles/${index}/selectionTimestamp`] = null;
+                    }
+                });
+                
+                if (Object.keys(updates).length > 0) {
+                    await update(gameRef, updates);
+                }
+                
+                document.getElementById('selectedWord').textContent = 'none';
+                return;
+            }
+            
+            // Apply bananagrams selection rules
+            if (selectedTiles.length === 0) {
+                // No tiles selected - can select any board tile
+                await update(gameRef, {
+                    [`tiles/${tileIndex}/selected`]: true,
+                    [`tiles/${tileIndex}/selectionTimestamp`]: Date.now()
+                });
+            } else if (selectedTiles.length === 1) {
+                // One tile selected - next tile must be adjacent
+                const firstTile = selectedTiles[0];
+                if (!areTilesAdjacent(tile, firstTile)) {
+                    // Not adjacent - do nothing (prevent selection)
+                    return;
+                }
+                
+                await update(gameRef, {
+                    [`tiles/${tileIndex}/selected`]: true,
+                    [`tiles/${tileIndex}/selectionTimestamp`]: Date.now()
+                });
+            } else {
+                // Two or more tiles selected - must continue in the locked direction
+                const firstTile = selectedTiles[0];
+                const secondTile = selectedTiles[1];
+                const direction = getTileDirection(firstTile, secondTile);
+                
+                if (direction === 'horizontal') {
+                    // Must be in the same row as first tile
+                    if (!isInSameRow(tile, firstTile)) {
+                        return; // Not in same row - do nothing
+                    }
+                } else if (direction === 'vertical') {
+                    // Must be in the same column as first tile
+                    if (!isInSameColumn(tile, firstTile)) {
+                        return; // Not in same column - do nothing
+                    }
+                }
+                
+                await update(gameRef, {
+                    [`tiles/${tileIndex}/selected`]: true,
+                    [`tiles/${tileIndex}/selectionTimestamp`]: Date.now()
+                });
+            }
 
             // Update selected word display
             setTimeout(async () => {
