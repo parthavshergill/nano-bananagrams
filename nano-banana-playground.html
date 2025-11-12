@@ -127,13 +127,28 @@
         .game-board {
             position: relative;
             background: #a8d5ba;
-            background-image: 
-                repeating-linear-gradient(0deg, transparent, transparent 20px, rgba(139, 115, 85, 0.1) 20px, rgba(139, 115, 85, 0.1) 21px),
-                repeating-linear-gradient(90deg, transparent, transparent 20px, rgba(139, 115, 85, 0.1) 20px, rgba(139, 115, 85, 0.1) 21px);
             border: 4px solid #5d4e37;
             min-height: 500px;
             margin-bottom: 20px;
             box-shadow: inset 3px 3px 0 rgba(0,0,0,0.2);
+            overflow: hidden;
+            cursor: grab;
+        }
+
+        .game-board.panning {
+            cursor: grabbing;
+        }
+
+        .game-board-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 20000px;
+            height: 20000px;
+            background-image: 
+                repeating-linear-gradient(0deg, transparent, transparent 20px, rgba(139, 115, 85, 0.1) 20px, rgba(139, 115, 85, 0.1) 21px),
+                repeating-linear-gradient(90deg, transparent, transparent 20px, rgba(139, 115, 85, 0.1) 20px, rgba(139, 115, 85, 0.1) 21px);
+            pointer-events: auto;
         }
 
         .tile {
@@ -412,7 +427,9 @@
                         </div>
 
                         <h3>Game Board</h3>
-                        <div class="game-board" id="gameBoard"></div>
+                        <div class="game-board" id="gameBoard">
+                            <div class="game-board-canvas" id="gameBoardCanvas"></div>
+                        </div>
 
                         <h3>Your Tiles</h3>
                         <div class="tile-pool" id="tilePool"></div>
@@ -454,6 +471,22 @@
         let draggedTile = null;
         let offsetX, offsetY;
         let tilePlaceholder = null;
+        
+        // Viewport state for infinite scrollable canvas
+        let viewportOffset = { x: 0, y: 0 };
+        let isPanning = false;
+        let panStartX = 0;
+        let panStartY = 0;
+        let panStartOffsetX = 0;
+        let panStartOffsetY = 0;
+        
+        // Helper function to update canvas transform
+        function updateCanvasTransform() {
+            const canvas = document.getElementById('gameBoardCanvas');
+            if (canvas) {
+                canvas.style.transform = `translate(${viewportOffset.x}px, ${viewportOffset.y}px)`;
+            }
+        }
         
         // Image generation queue system
         let imageQueue = [];
@@ -509,6 +542,9 @@
                 document.getElementById('setup').style.display = 'none';
                 document.getElementById('gameArea').style.display = 'block';
 
+                // Initialize canvas transform
+                updateCanvasTransform();
+                
                 setupDragAndDrop();
             } catch (error) {
                 alert('Error initializing: ' + error.message);
@@ -630,10 +666,11 @@
 
         function renderGame(data) {
             const board = document.getElementById('gameBoard');
+            const canvas = document.getElementById('gameBoardCanvas');
             const pool = document.getElementById('tilePool');
             
             // Clear existing
-            board.innerHTML = '';
+            canvas.innerHTML = '';
             pool.innerHTML = '';
 
             // Convert tiles to array format (Firebase may return object)
@@ -657,7 +694,7 @@
 
                 if (tile.location === 'board') {
                     const tileEl = createTileElement(tile);
-                    board.appendChild(tileEl);
+                    canvas.appendChild(tileEl);
                 }
             });
 
@@ -768,6 +805,10 @@
 
             document.addEventListener('mousedown', (e) => {
                 const target = e.target;
+                const board = document.getElementById('gameBoard');
+                const canvas = document.getElementById('gameBoardCanvas');
+                
+                // Check if clicking on tile
                 if (target.classList.contains('tile')) {
                     // Just track that we might start dragging - don't manipulate DOM yet
                     isDragging = true;
@@ -778,7 +819,7 @@
                     dragStartY = e.clientY;
 
                     // Store original position for board tiles
-                    if (startParent && startParent.id === 'gameBoard') {
+                    if (startParent && startParent.id === 'gameBoardCanvas') {
                         startLocation = 'board';
                         startX = parseInt(draggedTile.style.left) || 0;
                         startY = parseInt(draggedTile.style.top) || 0;
@@ -795,9 +836,32 @@
                     e.preventDefault();
                     e.stopPropagation();
                 }
+                // Check if clicking on empty board area (for panning)
+                else if (target === board || target === canvas) {
+                    isPanning = true;
+                    panStartX = e.clientX;
+                    panStartY = e.clientY;
+                    panStartOffsetX = viewportOffset.x;
+                    panStartOffsetY = viewportOffset.y;
+                    board.classList.add('panning');
+                    
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
             });
 
             document.addEventListener('mousemove', (e) => {
+                // Handle panning
+                if (isPanning) {
+                    const deltaX = e.clientX - panStartX;
+                    const deltaY = e.clientY - panStartY;
+                    viewportOffset.x = panStartOffsetX + deltaX;
+                    viewportOffset.y = panStartOffsetY + deltaY;
+                    updateCanvasTransform();
+                    return;
+                }
+                
+                // Handle tile dragging
                 if (isDragging && draggedTile && !dragInitiated) {
                     const deltaX = Math.abs(e.clientX - dragStartX);
                     const deltaY = Math.abs(e.clientY - dragStartY);
@@ -832,6 +896,14 @@
             });
 
             document.addEventListener('mouseup', async (e) => {
+                // Handle panning cleanup
+                if (isPanning) {
+                    isPanning = false;
+                    const board = document.getElementById('gameBoard');
+                    board.classList.remove('panning');
+                    return;
+                }
+                
                 if (isDragging && draggedTile) {
                     const tileId = parseInt(draggedTile.dataset.tileId, 10);
 
@@ -876,14 +948,14 @@
 
                         if (isOverBoard) {
                             // Dropped on board - snap to grid
-                            let x = tileCenterX - boardRect.left - 25;
-                            let y = tileCenterY - boardRect.top - 25;
+                            // Convert screen coordinates to world coordinates
+                            let x = tileCenterX - boardRect.left - 25 - viewportOffset.x;
+                            let y = tileCenterY - boardRect.top - 25 - viewportOffset.y;
 
                             x = Math.round(x / 55) * 55;
                             y = Math.round(y / 55) * 55;
 
-                            x = Math.max(0, Math.min(x, boardRect.width - 50));
-                            y = Math.max(0, Math.min(y, boardRect.height - 50));
+                            // Note: We don't clamp to board boundaries anymore since the canvas is infinite
 
                             keepPlaceholder = startParent && startParent.classList.contains('tile-pool');
 
