@@ -406,6 +406,10 @@
                             <strong>Tiles in Pile:</strong> <span id="pileCount">144</span> | 
                             <strong>Selected:</strong> <span id="selectedWord">none</span>
                         </div>
+                        
+                        <div class="status" id="pileBreakdown" style="font-size: 0.4em; line-height: 1.8; max-height: 100px; overflow-y: auto;">
+                            <strong>Pile Contents:</strong> <span id="pileLetters"></span>
+                        </div>
 
                         <h3>Game Board</h3>
                         <div class="game-board" id="gameBoard"></div>
@@ -698,6 +702,32 @@
             // Update status
             const pileCount = tiles.filter(t => t && t.location === 'pile').length;
             document.getElementById('pileCount').textContent = pileCount;
+            
+            // Calculate letter breakdown for pile
+            const letterCounts = {};
+            tiles.forEach(tile => {
+                if (tile && tile.location === 'pile') {
+                    letterCounts[tile.letter] = (letterCounts[tile.letter] || 0) + 1;
+                }
+            });
+            
+            // Display letter breakdown grouped by count
+            const countGroups = {};
+            for (const [letter, count] of Object.entries(letterCounts)) {
+                if (!countGroups[count]) {
+                    countGroups[count] = [];
+                }
+                countGroups[count].push(letter);
+            }
+            
+            // Sort groups by count (descending) and format display
+            const sortedCounts = Object.keys(countGroups).map(Number).sort((a, b) => b - a);
+            const breakdownText = sortedCounts.map(count => {
+                const letters = countGroups[count].sort().join(', ');
+                return `${count}: ${letters}`;
+            }).join(' | ');
+            
+            document.getElementById('pileLetters').textContent = breakdownText || 'Empty';
 
             // Render gallery
             renderGallery(data.gallery || []);
