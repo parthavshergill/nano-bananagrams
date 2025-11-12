@@ -418,9 +418,7 @@
                 <div>
                     <div class="gallery">
                         <h2>🎨 Banana Art Gallery</h2>
-                        <div id="galleryLoading" class="loading" style="display: none;">
-                            Generating art... 🎨
-                        </div>
+                        <div id="galleryLoading" class="loading" style="display: none;"></div>
                         <div class="gallery-grid" id="galleryGrid"></div>
                     </div>
                 </div>
@@ -442,6 +440,11 @@
         let draggedTile = null;
         let offsetX, offsetY;
         let tilePlaceholder = null;
+        
+        // Image generation queue system
+        let imageQueue = [];
+        let activeGenerations = 0;
+        const MAX_CONCURRENT_GENERATIONS = 3;
 
         // Auto-initialize if config.js is loaded
         window.addEventListener('DOMContentLoaded', () => {
@@ -926,25 +929,50 @@
             if (Object.keys(updates).length > 0) {
                 await update(gameRef, updates);
             }
+            
+            // Clear the selected word display
+            document.getElementById('selectedWord').textContent = 'none';
         };
 
-        window.generateImage = async function() {
-            const snapshot = await get(gameRef);
-            const data = snapshot.val();
-            const tiles = tilesToArray(data.tiles || []);
-            const selectedTiles = tiles
-                .filter(t => t && t.selected)
-                .sort((a, b) => (a.selectionTimestamp || 0) - (b.selectionTimestamp || 0));
+        // Update loading status display
+        function updateLoadingStatus() {
+            const loadingDiv = document.getElementById('galleryLoading');
+            const queueInfo = [];
             
-            if (selectedTiles.length === 0) {
-                alert('Select some tiles first!');
-                return;
+            if (activeGenerations > 0) {
+                queueInfo.push(`Generating: ${activeGenerations}/3 🎨`);
             }
-
-            const word = selectedTiles.map(t => t.letter).join('');
             
-            document.getElementById('galleryLoading').style.display = 'block';
+            if (imageQueue.length > 0) {
+                queueInfo.push(`Queued: ${imageQueue.length}`);
+            }
+            
+            if (queueInfo.length > 0) {
+                loadingDiv.textContent = queueInfo.join(' | ');
+                loadingDiv.style.display = 'block';
+            } else {
+                loadingDiv.style.display = 'none';
+            }
+        }
 
+        // Process the next item in the queue
+        async function processQueue() {
+            while (activeGenerations < MAX_CONCURRENT_GENERATIONS && imageQueue.length > 0) {
+                const queueItem = imageQueue.shift();
+                activeGenerations++;
+                updateLoadingStatus();
+                
+                // Process this generation asynchronously
+                generateImageAsync(queueItem.word).finally(() => {
+                    activeGenerations--;
+                    updateLoadingStatus();
+                    processQueue(); // Process next item if available
+                });
+            }
+        }
+
+        // Actual image generation function
+        async function generateImageAsync(word) {
             try {
                 // Using Gemini 2.5 Flash Image generation (correct model and API format)
                 const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${googleApiKey}`, {
@@ -982,7 +1010,11 @@
                         const mimeType = imagePart.inlineData.mimeType || 'image/png';
                         const imageUrl = `data:${mimeType};base64,${imageData}`;
 
+                        // Get current gallery from Firebase
+                        const snapshot = await get(gameRef);
+                        const data = snapshot.val();
                         const gallery = data.gallery || [];
+                        
                         gallery.push({
                             word: word,
                             imageUrl: imageUrl,
@@ -990,27 +1022,48 @@
                         });
 
                         await update(gameRef, { gallery: gallery });
-                        
-                        // Clear selection
-                        await window.clearSelection();
                     } else {
                         console.error('Response structure:', result);
-                        alert('No image data in response. Check console for details.');
+                        alert(`No image data for "${word}". Check console for details.`);
                     }
                 } else {
                     console.error('Unexpected response structure:', result);
                     if (result.error) {
-                        alert('Image generation failed: ' + result.error.message);
+                        alert(`Image generation failed for "${word}": ${result.error.message}`);
                     } else {
-                        alert('Image generation failed: Unexpected response format. Check console for details.');
+                        alert(`Image generation failed for "${word}": Unexpected response format.`);
                     }
                 }
             } catch (error) {
-                alert('Error generating image: ' + error.message);
+                alert(`Error generating image for "${word}": ${error.message}`);
                 console.error('Full error:', error);
-            } finally {
-                document.getElementById('galleryLoading').style.display = 'none';
             }
+        }
+
+        // Public function to add image generation to queue
+        window.generateImage = async function() {
+            const snapshot = await get(gameRef);
+            const data = snapshot.val();
+            const tiles = tilesToArray(data.tiles || []);
+            const selectedTiles = tiles
+                .filter(t => t && t.selected)
+                .sort((a, b) => (a.selectionTimestamp || 0) - (b.selectionTimestamp || 0));
+            
+            if (selectedTiles.length === 0) {
+                alert('Select some tiles first!');
+                return;
+            }
+
+            const word = selectedTiles.map(t => t.letter).join('');
+            
+            // Add to queue
+            imageQueue.push({ word: word });
+            
+            // Clear selection immediately so user can select more tiles
+            await window.clearSelection();
+            
+            // Start processing the queue
+            processQueue();
         };
 
         function renderGallery(gallery) {
